@@ -8,6 +8,7 @@ use crate::{
     chip::Chip,
     command::{Command, CommandType},
     connection::Connection,
+    connection::GpioLine,
     elf::{FirmwareImage, RomSegment},
     error::{ConnectionError, FlashDetectError, ResultExt, RomError, RomErrorKind},
     image_format::ImageFormatId,
@@ -155,10 +156,12 @@ impl Flasher {
         serial: Box<dyn SerialPort>,
         port_info: UsbPortInfo,
         speed: Option<u32>,
+        gpio_dtr: Option<GpioLine>,
+        gpio_rts: Option<GpioLine>,
     ) -> Result<Self, Error> {
         let mut flasher = Flasher {
-            connection: Connection::new(serial, port_info), // default baud is always 115200
-            chip: Chip::Esp8266,                            // dummy, set properly later
+            connection: Connection::new(serial, port_info, gpio_dtr, gpio_rts), // default baud is always 115200
+            chip: Chip::Esp8266, // dummy, set properly later
             flash_size: FlashSize::Flash4Mb,
             spi_params: SpiAttachParams::default(), // may be set when trying to attach to flash
         };

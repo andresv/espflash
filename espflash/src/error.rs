@@ -91,6 +91,10 @@ pub enum ConnectionError {
     #[error("IO error while using serial port: {0}")]
     #[diagnostic(code(espflash::serial_error))]
     Serial(#[source] serialport::Error),
+    #[cfg(target_os = "linux")]
+    #[error("IO error while using GPIO: {0}")]
+    #[diagnostic(code(espflash::gpio_error))]
+    Gpio(#[source] gpio_cdev::errors::Error),
     #[error("Failed to connect to the device")]
     #[diagnostic(
         code(espflash::connection_failed),
@@ -152,6 +156,19 @@ impl From<serialport::Error> for ConnectionError {
 
 impl From<serialport::Error> for Error {
     fn from(err: serialport::Error) -> Self {
+        Self::Connection(err.into())
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl From<gpio_cdev::errors::Error> for ConnectionError {
+    fn from(err: gpio_cdev::errors::Error) -> Self {
+        ConnectionError::Gpio(err)
+    }
+}
+#[cfg(target_os = "linux")]
+impl From<gpio_cdev::errors::Error> for Error {
+    fn from(err: gpio_cdev::errors::Error) -> Self {
         Self::Connection(err.into())
     }
 }

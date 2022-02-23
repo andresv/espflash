@@ -17,6 +17,23 @@ use crate::{
 
 const USB_SERIAL_JTAG_PID: u16 = 0x1001;
 
+// For ESP32 flashing serial DTR and RTS pins are used to reset device
+// and put it to flashing mode.
+// On Linux platforms it is also possible to use `gpio_cdev` GPIO pins for that.
+// It can be useful for embedded platforms that do not have DTR and RTS pins exposed.
+#[cfg(target_os = "linux")]
+pub struct GpioLine(pub gpio_cdev::LineHandle);
+#[cfg(not(target_os = "linux"))]
+pub struct DummyGpioLineHandle;
+#[cfg(not(target_os = "linux"))]
+impl DummyGpioLineHandle {
+    pub fn set_value(&self, _: u8) -> Result<(), Error> {
+        Ok(())
+    }
+}
+#[cfg(not(target_os = "linux"))]
+pub struct GpioLine(pub DummyGpioLineHandle);
+
 #[derive(Debug, Copy, Clone, BinRead)]
 pub struct CommandResponse {
     pub resp: u8,
@@ -29,6 +46,8 @@ pub struct CommandResponse {
 
 pub struct Connection {
     serial: Box<dyn SerialPort>,
+    gpio_dtr: Option<GpioLine>,
+    gpio_rts: Option<GpioLine>,
     port_info: UsbPortInfo,
     decoder: SlipDecoder,
 }
@@ -43,60 +62,85 @@ struct WriteRegParams {
 }
 
 impl Connection {
-    pub fn new(serial: Box<dyn SerialPort>, port_info: UsbPortInfo) -> Self {
+    pub fn new(
+        serial: Box<dyn SerialPort>,
+        port_info: UsbPortInfo,
+        gpio_dtr: Option<GpioLine>,
+        gpio_rts: Option<GpioLine>,
+    ) -> Self {
         Connection {
             serial,
+            gpio_dtr,
+            gpio_rts,
             port_info,
             decoder: SlipDecoder::new(),
         }
     }
 
+    fn set_dtr(&mut self, state: bool) -> Result<(), Error> {
+        if let Some(ref dtr) = self.gpio_dtr {
+            dtr.0.set_value(state as u8)?;
+        } else {
+            self.serial.write_data_terminal_ready(state)?;
+        }
+        Ok(())
+    }
+
+    fn set_rts(&mut self, state: bool) -> Result<(), Error> {
+        if let Some(ref rts) = self.gpio_rts {
+            rts.0.set_value(state as u8)?;
+        } else {
+            self.serial.write_request_to_send(state)?;
+        }
+        Ok(())
+    }
+
     pub fn reset(&mut self) -> Result<(), Error> {
         sleep(Duration::from_millis(100));
 
-        self.serial.write_data_terminal_ready(false)?;
-        self.serial.write_request_to_send(true)?;
+        self.set_dtr(false)?;
+        self.set_rts(true)?;
 
         sleep(Duration::from_millis(100));
 
-        self.serial.write_request_to_send(false)?;
+        self.set_rts(false)?;
 
         Ok(())
     }
 
     pub fn reset_to_flash(&mut self, extra_delay: bool) -> Result<(), Error> {
         if self.port_info.pid == USB_SERIAL_JTAG_PID {
-            self.serial.write_data_terminal_ready(false)?;
-            self.serial.write_request_to_send(false)?;
+            self.set_dtr(false)?;
+            self.set_rts(false)?;
 
             sleep(Duration::from_millis(100));
 
-            self.serial.write_data_terminal_ready(true)?;
-            self.serial.write_request_to_send(false)?;
+            self.set_dtr(true)?;
+            self.set_rts(false)?;
 
             sleep(Duration::from_millis(100));
 
-            self.serial.write_request_to_send(true)?;
-            self.serial.write_data_terminal_ready(false)?;
-            self.serial.write_request_to_send(true)?;
+            self.set_rts(true)?;
+            self.set_dtr(false)?;
+            self.set_rts(true)?;
 
             sleep(Duration::from_millis(100));
 
-            self.serial.write_data_terminal_ready(false)?;
-            self.serial.write_request_to_send(false)?;
+            self.set_dtr(false)?;
+            self.set_rts(false)?;
         } else {
-            self.serial.write_data_terminal_ready(false)?;
-            self.serial.write_request_to_send(true)?;
+            self.set_dtr(false)?;
+            self.set_rts(true)?;
 
             sleep(Duration::from_millis(100));
 
-            self.serial.write_data_terminal_ready(true)?;
-            self.serial.write_request_to_send(false)?;
+            self.set_dtr(true)?;
+            self.set_rts(false)?;
 
             let millis = if extra_delay { 500 } else { 50 };
             sleep(Duration::from_millis(millis));
 
-            self.serial.write_data_terminal_ready(false)?;
+            self.set_dtr(false)?;
         }
 
         Ok(())

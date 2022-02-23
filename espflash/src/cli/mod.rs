@@ -23,10 +23,45 @@ pub mod monitor;
 mod line_endings;
 mod serial;
 
+#[cfg(target_os = "linux")]
+pub struct GpioCdev {
+    chip: String,
+    line: u32,
+}
+#[cfg(target_os = "linux")]
+impl std::str::FromStr for GpioCdev {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let tokens = s.split(':').collect::<Vec<_>>();
+        if tokens.len() == 2 {
+            let line = match tokens[1].parse::<u32>() {
+                Ok(line) => line,
+                Err(_) => return Err(format!("`{:}` is not a valid gpio line number", tokens[1])),
+            };
+            Ok(Self {
+                chip: tokens[0].into(),
+                line,
+            })
+        } else {
+            Err(format!(
+                "`{:}` is not valid gpio cdev, define it as like `/dev/gpiochip0:10`",
+                s
+            ))
+        }
+    }
+}
+
 #[derive(Parser)]
 pub struct ConnectOpts {
     /// Serial port connected to target device
     pub serial: Option<String>,
+    #[cfg(target_os = "linux")]
+    /// For flashing use GPIO pin instead of serial DTR line, eg `/dev/gpiochip0:10`
+    pub gpio_dtr: Option<GpioCdev>,
+    /// For flashing use GPIO pin instead of serial RTS line, eg `/dev/gpiochip0:11`
+    #[cfg(target_os = "linux")]
+    pub gpio_rts: Option<GpioCdev>,
     /// Baud rate at which to flash target device
     #[clap(long)]
     pub speed: Option<u32>,
@@ -67,7 +102,46 @@ pub fn connect(opts: &ConnectOpts, config: &Config) -> Result<Flasher> {
         _ => unreachable!(),
     };
 
-    Ok(Flasher::connect(serial, port_info, opts.speed)?)
+    #[cfg(target_os = "linux")]
+    {
+        let (dtr, rts) = create_dtr_rts_gpios_from_args(&opts.gpio_dtr, &opts.gpio_rts)?;
+        Ok(Flasher::connect(serial, port_info, opts.speed, dtr, rts)?)
+    }
+    #[cfg(not(target_os = "linux"))]
+    Ok(Flasher::connect(serial, port_info, opts.speed, None, None)?)
+}
+
+#[cfg(target_os = "linux")]
+// On Linux platforms it is possible to use GPIO pins for DTR and RTS.
+pub fn create_dtr_rts_gpios_from_args(
+    gpio_dtr: &Option<GpioCdev>,
+    gpio_rts: &Option<GpioCdev>,
+) -> Result<(
+    Option<crate::connection::GpioLine>,
+    Option<crate::connection::GpioLine>,
+)> {
+    let dtr = if let Some(gpio_dtr) = gpio_dtr {
+        let mut chip = gpio_cdev::Chip::new(gpio_dtr.chip.clone()).map_err(Error::from)?;
+        let output = chip.get_line(gpio_dtr.line).map_err(Error::from)?;
+        let handle = output
+            .request(gpio_cdev::LineRequestFlags::OUTPUT, 0, "gpio-dtr")
+            .map_err(Error::from)?;
+        Some(crate::connection::GpioLine(handle))
+    } else {
+        None
+    };
+    let rts = if let Some(gpio_rts) = gpio_rts {
+        let mut chip = gpio_cdev::Chip::new(gpio_rts.chip.clone()).map_err(Error::from)?;
+        let output = chip.get_line(gpio_rts.line).map_err(Error::from)?;
+        let handle = output
+            .request(gpio_cdev::LineRequestFlags::OUTPUT, 0, "gpio-rts")
+            .map_err(Error::from)?;
+        Some(crate::connection::GpioLine(handle))
+    } else {
+        None
+    };
+
+    Ok((dtr, rts))
 }
 
 pub fn board_info(opts: ConnectOpts, config: Config) -> Result<()> {

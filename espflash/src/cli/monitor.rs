@@ -1,4 +1,5 @@
 use super::line_endings::normalized;
+use crate::connection::GpioLine;
 use crossterm::event::{poll, read, Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use miette::{IntoDiagnostic, Result};
@@ -77,7 +78,11 @@ impl Drop for RawModeGuard {
     }
 }
 
-pub fn monitor(mut serial: Box<dyn SerialPort>) -> serialport::Result<()> {
+pub fn monitor(
+    mut serial: Box<dyn SerialPort>,
+    gpio_dtr: Option<GpioLine>,
+    gpio_rts: Option<GpioLine>,
+) -> Result<(), crate::error::Error> {
     println!("Commands:");
     println!("    CTRL+R    Reset chip");
     println!("    CTRL+C    Exit");
@@ -108,12 +113,28 @@ pub fn monitor(mut serial: Box<dyn SerialPort>) -> serialport::Result<()> {
                     match key.code {
                         KeyCode::Char('c') => break,
                         KeyCode::Char('r') => {
-                            serial.write_data_terminal_ready(false)?;
-                            serial.write_request_to_send(true)?;
+                            // set DTR to 0
+                            if let Some(dtr) = &gpio_dtr {
+                                dtr.0.set_value(0)?;
+                            } else {
+                                serial.write_data_terminal_ready(false)?;
+                            }
+
+                            // set RTS to 1
+                            if let Some(rts) = &gpio_rts {
+                                rts.0.set_value(1)?;
+                            } else {
+                                serial.write_request_to_send(true)?;
+                            }
 
                             sleep(Duration::from_millis(100));
 
-                            serial.write_request_to_send(false)?;
+                            // set RTS to 0
+                            if let Some(rts) = &gpio_rts {
+                                rts.0.set_value(0)?;
+                            } else {
+                                serial.write_request_to_send(false)?;
+                            }
                             continue;
                         }
                         _ => {}

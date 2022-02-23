@@ -116,7 +116,16 @@ fn flash(opts: Opts, config: Config) -> Result<()> {
     }
 
     if opts.flash_opts.monitor {
-        monitor(flasher.into_serial()).into_diagnostic()?;
+        #[cfg(target_os = "linux")]
+        {
+            let (dtr, rts) = espflash::cli::create_dtr_rts_gpios_from_args(
+                &opts.connect_opts.gpio_dtr,
+                &opts.connect_opts.gpio_rts,
+            )?;
+            monitor(flasher.into_serial(), dtr, rts).into_diagnostic()?;
+        }
+        #[cfg(not(target_os = "linux"))]
+        monitor(flasher.into_serial(), None, None).into_diagnostic()?;
     }
 
     Ok(())
